@@ -8,6 +8,8 @@ use bevy::render::mesh::{self, PrimitiveTopology};
 use std::f32::consts::PI;
 use bevy::math::const_vec3;
 use itertools::Itertools;
+use rand::distributions::Uniform;
+use rand::{Rng, thread_rng};
 
 struct Field(Aabb);
 
@@ -30,16 +32,109 @@ fn main() {
         .add_system(cursor_grab_system)
         .add_system(draw_field_system)
         .add_system(keep_inside_field)
-        .add_system(debug_draw_boid)
+        //.add_system(debug_draw_boid)
         .add_system(boid_look_at_velocity)
         .insert_resource(Field(Aabb::from_min_max(
                     Vec3::new(-width/2.0, -height/2.0, -length/2.0),
                     Vec3::new(width/2.0, height/2.0, length/2.0)
         )))
+        .add_startup_system(spawn_boids)
+        .add_system(update_boids)
+        .insert_resource(BoidSettings::default())
         //.add_startup_system(setup)
         .run();
 }
 
+
+struct BoidSettings {
+    view_radius: f32,
+    avoid_raduis: f32,
+    max_speed: f32,
+    min_speed: f32,
+    max_steer_force: f32,
+
+    alignment_weight: f32,
+    cohesion_weight: f32,
+    seperation_weight: f32,
+}
+
+impl Default for BoidSettings {
+    fn default() -> Self {
+        BoidSettings {
+            alignment_weight: 1.0,
+            cohesion_weight: 1.0,
+            seperation_weight: 1.0,
+
+            max_steer_force: 3.0,
+            min_speed: 2.0,
+            max_speed: 5.0,
+
+            view_radius: 10.,
+            avoid_raduis: 6.,
+        }
+    }
+
+}
+
+fn update_boids(
+    mut boids: Query<(&Transform, &mut ExternalForce, &Velocity), With<Boid>>,
+    other_boids: Query<&Transform, With<Boid>>,
+    boid_settings: Res<BoidSettings>,
+) {
+    let square_view_radius = boid_settings.view_radius * boid_settings.view_radius;
+    let square_avoid_radius = boid_settings.avoid_raduis * boid_settings.avoid_raduis;
+
+    let boid_data = boids.iter().map(|(boid_transform, _, _)| {
+        let mut flock_heading = Vec3::ZERO;
+        let mut flock_center = Vec3::ZERO;
+        let mut seperation_heading = Vec3::ZERO;
+        let mut flock_size = 0;
+        for other_boid_transform in other_boids.iter() {
+            if boid_transform == other_boid_transform {
+                continue;
+            }
+            let offset = other_boid_transform.translation - boid_transform.translation;
+            let square_dist = offset.length_squared();
+            if square_dist < square_view_radius {
+                flock_size += 1; 
+                flock_heading += other_boid_transform.forward();
+                flock_center += other_boid_transform.translation;
+                if square_dist < square_avoid_radius {
+                    seperation_heading -= offset / square_dist;
+                }
+            }
+        }
+        return (flock_heading, flock_center, seperation_heading, flock_size);
+    }).collect::<Vec<_>>();
+
+    for (boid_cur_data, boid_calc_data) in itertools::zip(boids.iter_mut(), boid_data) {
+        let (transform, mut external_force, velocity) = boid_cur_data;
+        let (flock_heading, flock_center, seperation_heading, flock_size) = boid_calc_data;
+        external_force.force = Vec3::ZERO;
+        if flock_size == 0 {
+            continue;
+        }
+        let avg_flock_center = flock_center / (flock_size as f32);
+        let flock_center_offset = avg_flock_center - transform.translation;
+
+        let alignment_force = steer_towards(velocity.linvel, flock_heading, &boid_settings) * boid_settings.alignment_weight;
+        let collision_avoidence_force = steer_towards(velocity.linvel, flock_center_offset, &boid_settings) * boid_settings.cohesion_weight;
+        let seperation_force = steer_towards(velocity.linvel, seperation_heading, &boid_settings) * boid_settings.seperation_weight;
+
+        external_force.force += alignment_force;
+        external_force.force += collision_avoidence_force;
+        external_force.force += seperation_force;
+    }
+
+}
+
+fn steer_towards(velocity: Vec3, vector: Vec3, boid_settings: &Res<BoidSettings>) -> Vec3 {
+    if vector.length_squared() < 0.1 {
+        return Vec3::ZERO;
+    }
+    let new_vector = vector.normalize() * boid_settings.max_speed - velocity;
+    return new_vector.clamp_length_max(boid_settings.max_steer_force);
+}
 
 fn keep_inside_field(
     field: Res<Field>,
@@ -134,7 +229,7 @@ fn setup_graphics(mut commands: Commands) {
                 transform: Transform::from_xyz(-3.0, 3.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
                 ..Default::default()
             },
-            Vec3::new(-3.0, 3.0, 10.0),
+            Vec3::new(0., 0., 90.0),
             Vec3::new(0., 0., 0.),
         ));
 }
@@ -203,8 +298,8 @@ const LEFT: Vec3 = Vec3::X;
 
 
 fn create_boid_bundle(
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    meshes: &mut ResMut<Assets<Mesh>>,
+    materials: &mut ResMut<Assets<StandardMaterial>>,
 ) -> BoidBundle {
 
     let a1 = (2.0 * PI) * 0.0/3.0; 
@@ -247,10 +342,6 @@ fn create_boid_bundle(
     let pbr_bundle =  PbrBundle {
         mesh: meshes.add(mesh),
         material: materials.add(Color::rgb(0.3, 0.5, 0.3).into()),
-        transform: Transform {
-            scale: Vec3::splat(0.5),
-            ..Default::default()
-        },
         ..Default::default()
     };
 
@@ -269,7 +360,7 @@ fn create_boid_bundle(
         ..Default::default()
     };
 
-    let external_impluse = ExternalForce {
+    let external_force = ExternalForce {
         force: Vec3::new(0.0, 0.0, 0.0),
         ..Default::default()
     };
@@ -280,7 +371,7 @@ fn create_boid_bundle(
         collider,
         mass_properties,
         rigid_body: RigidBody::Dynamic,
-        external_impluse,
+        external_force,
         boid: Boid,
         velocity: Velocity::default(),
     };
@@ -298,18 +389,49 @@ struct BoidBundle {
     collider: Collider,
     rigid_body: RigidBody,
     mass_properties: MassProperties,
-    external_impluse: ExternalForce,
+    external_force: ExternalForce,
     boid: Boid,
     velocity: Velocity,
 }
 
+fn spawn_boids(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    field: Res<Field>,
+) {
+    let mut rng = thread_rng();
+    let radius = f32::min(
+        field.0.min().min_element(),
+        field.0.max().min_element()
+    ).abs();
+    let distribution = Uniform::new(-radius, radius);
+    for _ in 0..100 {
+        let boid_bundle = create_boid_bundle(&mut meshes, &mut materials);
+        let translation = Vec3::new(
+            rng.sample(distribution),
+            rng.sample(distribution),
+            rng.sample(distribution),
+        );
+
+        let rand_offset = Vec3::new(
+            rng.gen::<f32>(),
+            rng.gen::<f32>(),
+            rng.gen::<f32>(),
+        );
+
+        let transform = Transform::from_translation(translation)
+            .looking_at(translation + rand_offset, Vec3::Y)
+            .with_scale(Vec3::splat(0.5));
+
+        commands.spawn_bundle(boid_bundle)
+            .insert(transform);
+    }
+}
+
 fn setup(
     mut commands: Commands,
-    meshes: ResMut<Assets<Mesh>>,
-    materials: ResMut<Assets<StandardMaterial>>,
     ) {
-    let boid_bundle = create_boid_bundle(meshes, materials);
-    commands.spawn_bundle(boid_bundle);
     // light
     commands.spawn_bundle(PointLightBundle {
         point_light: PointLight {
@@ -317,7 +439,7 @@ fn setup(
             shadows_enabled: true,
             ..default()
         },
-        transform: Transform::from_xyz(4.0, 8.0, 4.0),
+        transform: Transform::from_xyz(0.0, 0.0, 0.0),
         ..default()
     });
 }

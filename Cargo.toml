@@ -12,4 +12,15 @@ bevy-inspector-egui = "0.11"
 smooth-bevy-cameras = "0.4.0"
 bevy_prototype_debug_lines = { version = "0.7", features = ["3d"] }
 itertools = "0.10.3"
-#rayon = "1.5.3"
+rayon = "1.5.3"
+rand = "0.8.5"
+
+
+# Enable only a small amount of optimization in debug mode
+[profile.dev]
+opt-level = 3
+
+# Enable high optimizations for dependencies (incl. Bevy), but not for our code:
+[profile.dev.package."*"]
+opt-level = 3
+
