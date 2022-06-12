@@ -205,9 +205,22 @@ fn create_boid_bundle(
         chunks.as_slice(),
     ).unwrap();
 
+    let mass_properties = MassProperties {
+        mass: 1.0,
+        ..Default::default()
+    };
+
+    let external_impluse = ExternalImpulse {
+        impulse: Vec3::new(0.0, 0.0, 0.0),
+        ..Default::default()
+    };
+
     return BoidBundle {
         pbr_bundle,
         collider,
+        mass_properties,
+        rigid_body: RigidBody::Dynamic,
+        external_impluse
     };
 
 }
@@ -217,6 +230,9 @@ struct BoidBundle {
     #[bundle]
     pbr_bundle: PbrBundle,
     collider: Collider,
+    rigid_body: RigidBody,
+    mass_properties: MassProperties,
+    external_impluse: ExternalImpulse,
 }
 
 fn setup(
