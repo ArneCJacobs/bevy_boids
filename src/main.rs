@@ -14,7 +14,8 @@ use rand::{Rng, thread_rng};
 struct Field(Aabb);
 
 fn main() {
-    let (width, height, length) = (50.0, 50.0, 50.0);
+    let field_width = 200.0;
+    let field = Vec3::splat(field_width/2.0);
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugin(WorldInspectorPlugin::new())
@@ -34,17 +35,26 @@ fn main() {
         .add_system(keep_inside_field)
         //.add_system(debug_draw_boid)
         .add_system(boid_look_at_velocity)
-        .insert_resource(Field(Aabb::from_min_max(
-                    Vec3::new(-width/2.0, -height/2.0, -length/2.0),
-                    Vec3::new(width/2.0, height/2.0, length/2.0)
-        )))
+        .insert_resource(Field(Aabb::from_min_max(-field, field)))
         .add_startup_system(spawn_boids)
         .add_system(update_boids)
         .insert_resource(BoidSettings::default())
         //.add_startup_system(setup)
+        .add_system(enforce_min_speed.after(update_boids))
         .run();
 }
 
+fn enforce_min_speed(
+    boid_settings: Res<BoidSettings>,
+    mut boids: Query<&mut Velocity, With<Boid>>
+) {
+    for mut velocity in boids.iter_mut() {
+        if velocity.linvel.length_squared() == 0.0 {
+            velocity.linvel = Vec3::new(0.1, 0.0, 0.0);   
+        } 
+        velocity.linvel = velocity.linvel.clamp_length_min(boid_settings.min_speed);
+    }
+}
 
 struct BoidSettings {
     view_radius: f32,
@@ -66,11 +76,11 @@ impl Default for BoidSettings {
             seperation_weight: 1.0,
 
             max_steer_force: 3.0,
-            min_speed: 2.0,
-            max_speed: 5.0,
+            min_speed: 15.0,
+            max_speed: 40.0,
 
-            view_radius: 10.,
-            avoid_raduis: 6.,
+            view_radius: 40.,
+            avoid_raduis: 10.,
         }
     }
 
@@ -229,7 +239,7 @@ fn setup_graphics(mut commands: Commands) {
                 transform: Transform::from_xyz(-3.0, 3.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
                 ..Default::default()
             },
-            Vec3::new(0., 0., 90.0),
+            Vec3::new(0., 0., 250.0),
             Vec3::new(0., 0., 0.),
         ));
 }
@@ -406,8 +416,17 @@ fn spawn_boids(
         field.0.max().min_element()
     ).abs();
     let distribution = Uniform::new(-radius, radius);
-    for _ in 0..100 {
+    for _ in 0..1000 {
         let boid_bundle = create_boid_bundle(&mut meshes, &mut materials);
+        let linvel = Vec3::new(
+            rng.gen::<f32>(),
+            rng.gen::<f32>(),
+            rng.gen::<f32>(),
+        );
+        let velocity = Velocity {
+            linvel,
+            ..Default::default()
+        };
         let translation = Vec3::new(
             rng.sample(distribution),
             rng.sample(distribution),
@@ -425,6 +444,7 @@ fn spawn_boids(
             .with_scale(Vec3::splat(0.5));
 
         commands.spawn_bundle(boid_bundle)
+            .insert(velocity)
             .insert(transform);
     }
 }
