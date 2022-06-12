@@ -7,6 +7,7 @@ use bevy_prototype_debug_lines::*;
 use bevy::render::mesh::{self, PrimitiveTopology};
 use std::f32::consts::PI;
 use bevy::math::const_vec3;
+use itertools::Itertools;
 
 struct Field(Aabb);
 
@@ -146,10 +147,10 @@ const UP: Vec3 = Vec3::Y;
 const LEFT: Vec3 = Vec3::X;
 
 
-fn create_bpr_bundle(
+fn create_boid_bundle(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-) -> PbrBundle {
+) -> BoidBundle {
 
     let a1 = (2.0 * PI) * 0.0/3.0; 
     let a2 = (2.0 * PI) * 1.0/3.0; 
@@ -162,13 +163,13 @@ fn create_bpr_bundle(
         ((a3.sin() * LEFT + a3.cos() * UP).into(), [1.0, 1.0]),
     ];
 
-    let indices = mesh::Indices::U32(
-        vec![
+    let indices_temp = vec![
         0, 1, 2,
         0, 2, 3,
         0, 3, 1,
         1, 3, 2,
-        ]);
+    ];
+    let indices = mesh::Indices::U32(indices_temp.clone());
 
     let mut positions = Vec::new();
     //let mut normals = Vec::new();
@@ -181,19 +182,41 @@ fn create_bpr_bundle(
 
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
     mesh.set_indices(Some(indices));
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions.clone());
     //mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.duplicate_vertices();
     mesh.compute_flat_normals();
 
     // add entities to the world
-    return PbrBundle {
+    let pbr_bundle =  PbrBundle {
         mesh: meshes.add(mesh),
         material: materials.add(Color::rgb(0.3, 0.5, 0.3).into()),
         ..default()
     };
 
+    let mut chunks = vec![];
+    for chunk in indices_temp.chunks_exact(3) {
+        chunks.push([chunk[0], chunk[1],chunk[2]]);
+    }
+
+    let collider = Collider::convex_mesh(
+        positions.into_iter().map(|v| v.into()).collect(),
+        chunks.as_slice(),
+    ).unwrap();
+
+    return BoidBundle {
+        pbr_bundle,
+        collider,
+    };
+
+}
+
+#[derive(Bundle)]
+struct BoidBundle {
+    #[bundle]
+    pbr_bundle: PbrBundle,
+    collider: Collider,
 }
 
 fn setup(
@@ -201,7 +224,12 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     ) {
-    commands.spawn_bundle(create_bpr_bundle(meshes, materials));
+    let boid_bundle = create_boid_bundle(meshes, materials);
+    //let boid_collider = Collider::convex_mesh(
+        //boid_bundle.mesh.attribute(Mesh::ATTRIBUTE_POSITION),
+        //boid_bundle.mesh.indices,
+    //).unwrap();
+    commands.spawn_bundle(boid_bundle);
     // light
     commands.spawn_bundle(PointLightBundle {
         point_light: PointLight {
