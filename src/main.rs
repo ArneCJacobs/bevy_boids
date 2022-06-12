@@ -29,6 +29,7 @@ fn main() {
         .add_startup_system(setup)
         .add_system(cursor_grab_system)
         .add_system(draw_field_system)
+        .add_system(debug_draw_boid)
         .insert_resource(Field(Aabb::from_min_max(
                     Vec3::new(-width/2.0, -height/2.0, -length/2.0),
                     Vec3::new(width/2.0, height/2.0, length/2.0)
@@ -37,6 +38,29 @@ fn main() {
         .run();
 }
 
+
+fn debug_draw_boid(
+    mut lines: ResMut<DebugLines>,
+    boids: Query<(&Transform, &Velocity, &ExternalImpulse), With<Boid>>
+) {
+    for (transform, velocity, external_impluse) in boids.iter() {
+        let pos = transform.translation;
+        lines.line_colored(
+            pos,
+            pos + velocity.linvel.normalize(),
+            0.0,
+            Color::GREEN
+        );
+
+        lines.line_colored(
+            pos,
+            pos + external_impluse.impulse.normalize(),
+            0.0,
+            Color::RED
+        );
+    }
+
+}
 // hides mouse
 pub fn cursor_grab_system(
     mut windows: ResMut<Windows>,
@@ -206,7 +230,7 @@ fn create_boid_bundle(
     ).unwrap();
 
     let mass_properties = MassProperties {
-        mass: 1.0,
+        mass: 10.0,
         ..Default::default()
     };
 
@@ -216,35 +240,40 @@ fn create_boid_bundle(
     };
 
     return BoidBundle {
+        name: Name::new("Boid"),
         pbr_bundle,
         collider,
         mass_properties,
         rigid_body: RigidBody::Dynamic,
-        external_impluse
+        external_impluse,
+        boid: Boid,
+        velocity: Velocity::default()
     };
 
 }
 
+#[derive(Component)]
+struct Boid;
+
 #[derive(Bundle)]
 struct BoidBundle {
+    name: Name,
     #[bundle]
     pbr_bundle: PbrBundle,
     collider: Collider,
     rigid_body: RigidBody,
     mass_properties: MassProperties,
     external_impluse: ExternalImpulse,
+    boid: Boid,
+    velocity: Velocity,
 }
 
 fn setup(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
+    meshes: ResMut<Assets<Mesh>>,
+    materials: ResMut<Assets<StandardMaterial>>,
     ) {
     let boid_bundle = create_boid_bundle(meshes, materials);
-    //let boid_collider = Collider::convex_mesh(
-        //boid_bundle.mesh.attribute(Mesh::ATTRIBUTE_POSITION),
-        //boid_bundle.mesh.indices,
-    //).unwrap();
     commands.spawn_bundle(boid_bundle);
     // light
     commands.spawn_bundle(PointLightBundle {
