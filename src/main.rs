@@ -24,12 +24,14 @@ fn main() {
             gravity: Vec3::new(0.0, 0.0, 0.0),
             ..Default::default()
         })
-        .add_plugin(RapierDebugRenderPlugin::default())
+        //.add_plugin(RapierDebugRenderPlugin::default())
         .add_startup_system(setup_graphics)
         .add_startup_system(setup)
         .add_system(cursor_grab_system)
         .add_system(draw_field_system)
+        .add_system(keep_inside_field)
         .add_system(debug_draw_boid)
+        .add_system(boid_look_at_velocity)
         .insert_resource(Field(Aabb::from_min_max(
                     Vec3::new(-width/2.0, -height/2.0, -length/2.0),
                     Vec3::new(width/2.0, height/2.0, length/2.0)
@@ -39,11 +41,40 @@ fn main() {
 }
 
 
+fn keep_inside_field(
+    field: Res<Field>,
+    mut boids: Query<&mut Transform, With<Boid>>) {
+    let min: Vec3 = field.0.min().into();
+    let max: Vec3 = field.0.max().into();
+    for mut transform in boids.iter_mut() {
+        let mut pos = transform.translation;
+        pos = Vec3::select(min.cmplt(pos), pos, max);
+        pos = Vec3::select(pos.cmple(max), pos, min);
+        transform.translation = pos;
+    }
+    
+}
+
+fn boid_look_at_velocity(mut boids: Query<(&mut Transform, &Velocity), With<Boid>>) {
+    for (mut transform, velocity) in boids.iter_mut() {
+        if velocity.linvel.length_squared() > 0.001 {
+            let pos = transform.translation;
+            let up = transform.up();
+            transform.look_at(
+                pos + velocity.linvel.normalize(),
+                up
+            );
+
+        }
+    }
+
+}
+
 fn debug_draw_boid(
     mut lines: ResMut<DebugLines>,
-    boids: Query<(&Transform, &Velocity, &ExternalImpulse), With<Boid>>
+    boids: Query<(&Transform, &Velocity, &ExternalForce), With<Boid>>
 ) {
-    for (transform, velocity, external_impluse) in boids.iter() {
+    for (transform, velocity, external_force) in boids.iter() {
         let pos = transform.translation;
         lines.line_colored(
             pos,
@@ -54,7 +85,7 @@ fn debug_draw_boid(
 
         lines.line_colored(
             pos,
-            pos + external_impluse.impulse.normalize(),
+            pos + external_force.force.normalize(),
             0.0,
             Color::RED
         );
@@ -216,7 +247,11 @@ fn create_boid_bundle(
     let pbr_bundle =  PbrBundle {
         mesh: meshes.add(mesh),
         material: materials.add(Color::rgb(0.3, 0.5, 0.3).into()),
-        ..default()
+        transform: Transform {
+            scale: Vec3::splat(0.5),
+            ..Default::default()
+        },
+        ..Default::default()
     };
 
     let mut chunks = vec![];
@@ -234,8 +269,8 @@ fn create_boid_bundle(
         ..Default::default()
     };
 
-    let external_impluse = ExternalImpulse {
-        impulse: Vec3::new(0.0, 0.0, 0.0),
+    let external_impluse = ExternalForce {
+        force: Vec3::new(0.0, 0.0, 0.0),
         ..Default::default()
     };
 
@@ -247,7 +282,7 @@ fn create_boid_bundle(
         rigid_body: RigidBody::Dynamic,
         external_impluse,
         boid: Boid,
-        velocity: Velocity::default()
+        velocity: Velocity::default(),
     };
 
 }
@@ -263,7 +298,7 @@ struct BoidBundle {
     collider: Collider,
     rigid_body: RigidBody,
     mass_properties: MassProperties,
-    external_impluse: ExternalImpulse,
+    external_impluse: ExternalForce,
     boid: Boid,
     velocity: Velocity,
 }
