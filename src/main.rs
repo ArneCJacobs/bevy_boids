@@ -6,6 +6,7 @@ use bevy::render::primitives::Aabb;
 use bevy_prototype_debug_lines::*;
 use bevy::render::mesh::{self, PrimitiveTopology};
 use std::f32::consts::PI;
+use bevy::math::const_vec3;
 
 struct Field(Aabb);
 
@@ -140,16 +141,25 @@ pub fn draw_bounding_box(lines: &mut ResMut<DebugLines>, aabb: &Aabb) {
     }
 }
 
+const FORWARD: Vec3 = const_vec3!([0.0, 0.0, -1.0]);
+const UP: Vec3 = Vec3::Y;
+const LEFT: Vec3 = Vec3::X;
+
+
 fn create_bpr_bundle(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) -> PbrBundle {
 
-    let vertices = [
-        ([0.0, 2.0, 0.0], [1.0, 1.0]),
-        ([((2.0 * PI) * 0.0/3.0).sin(), 0.0, ((2.0 * PI) * 0.0/3.0).cos()], [1.0, 1.0]),
-        ([((2.0 * PI) * 1.0/3.0).sin(), 0.0, ((2.0 * PI) * 1.0/3.0).cos()], [1.0, 1.0]),
-        ([((2.0 * PI) * 2.0/3.0).sin(), 0.0, ((2.0 * PI) * 2.0/3.0).cos()], [1.0, 1.0]),
+    let a1 = (2.0 * PI) * 0.0/3.0; 
+    let a2 = (2.0 * PI) * 1.0/3.0; 
+    let a3 = (2.0 * PI) * 2.0/3.0; 
+
+    let vertices: [([f32; 3], [f32; 2]); 4] = [
+        ((2.0 * FORWARD).into(), [1.0, 1.0]),
+        ((a1.sin() * LEFT + a1.cos() * UP).into(), [1.0, 1.0]),
+        ((a2.sin() * LEFT + a2.cos() * UP).into(), [1.0, 1.0]),
+        ((a3.sin() * LEFT + a3.cos() * UP).into(), [1.0, 1.0]),
     ];
 
     let indices = mesh::Indices::U32(
