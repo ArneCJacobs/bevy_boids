@@ -10,6 +10,7 @@ use bevy::math::const_vec3;
 use itertools::Itertools;
 use rand::distributions::Uniform;
 use rand::{Rng, thread_rng};
+use bevy_rapier3d::math::Rot;
 
 struct Field(Aabb);
 
@@ -29,7 +30,6 @@ fn main() {
         })
         //.add_plugin(RapierDebugRenderPlugin::default())
         .add_startup_system(setup_graphics)
-        .add_startup_system(setup)
         .add_system(cursor_grab_system)
         .add_system(draw_field_system)
         .add_system(keep_inside_field)
@@ -39,7 +39,6 @@ fn main() {
         .add_startup_system(spawn_boids)
         .add_system(update_boids)
         .insert_resource(BoidSettings::default())
-        //.add_startup_system(setup)
         .add_system(enforce_min_speed.after(update_boids))
         .run();
 }
@@ -88,20 +87,27 @@ impl Default for BoidSettings {
 
 fn update_boids(
     mut boids: Query<(&Transform, &mut ExternalForce, &Velocity), With<Boid>>,
-    other_boids: Query<&Transform, With<Boid>>,
     boid_settings: Res<BoidSettings>,
+    other_boids_transform: Query<&Transform, With<Boid>>,
+    rapier_context: Res<RapierContext>,
+    mut lines: ResMut<DebugLines>,
 ) {
     let square_view_radius = boid_settings.view_radius * boid_settings.view_radius;
     let square_avoid_radius = boid_settings.avoid_raduis * boid_settings.avoid_raduis;
+    let shape = Collider::ball(boid_settings.view_radius);
+    let query_groups = InteractionGroups::new(0b10, !0b10);
 
     let boid_data = boids.iter().map(|(boid_transform, _, _)| {
         let mut flock_heading = Vec3::ZERO;
         let mut flock_center = Vec3::ZERO;
         let mut seperation_heading = Vec3::ZERO;
         let mut flock_size = 0;
-        for other_boid_transform in other_boids.iter() {
+        rapier_context.intersections_with_shape(boid_transform.translation, Rot::IDENTITY, &shape, query_groups, None, |entity| {
+
+            let other_boid_transform = other_boids_transform.get(entity).unwrap();
+            //lines.line_colored(boid_transform.translation, other_boid_transform.translation, 0., Color::GREEN);
             if boid_transform == other_boid_transform {
-                continue;
+                return true;
             }
             let offset = other_boid_transform.translation - boid_transform.translation;
             let square_dist = offset.length_squared();
@@ -113,7 +119,9 @@ fn update_boids(
                     seperation_heading -= offset / square_dist;
                 }
             }
-        }
+            return true;
+
+        });
         return (flock_heading, flock_center, seperation_heading, flock_size);
     }).collect::<Vec<_>>();
 
@@ -223,6 +231,17 @@ pub fn cursor_grab_system(
 
 
 fn setup_graphics(mut commands: Commands) {
+
+    // light
+    commands.spawn_bundle(PointLightBundle {
+        point_light: PointLight {
+            intensity: 1500.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        transform: Transform::from_xyz(0.0, 0.0, 0.0),
+        ..default()
+    });
 
     let controller = FpsCameraController {
         enabled: false,
@@ -409,6 +428,7 @@ fn spawn_boids(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     field: Res<Field>,
+    boid_settings: Res<BoidSettings>,
 ) {
     let mut rng = thread_rng();
     let radius = f32::min(
@@ -416,50 +436,38 @@ fn spawn_boids(
         field.0.max().min_element()
     ).abs();
     let distribution = Uniform::new(-radius, radius);
+    let rotation_distribution = Uniform::new(-1., 1.);
     for _ in 0..1000 {
         let boid_bundle = create_boid_bundle(&mut meshes, &mut materials);
+
         let linvel = Vec3::new(
-            rng.gen::<f32>(),
-            rng.gen::<f32>(),
-            rng.gen::<f32>(),
+            rng.sample(rotation_distribution),
+            rng.sample(rotation_distribution),
+            rng.sample(rotation_distribution),
         );
         let velocity = Velocity {
             linvel,
             ..Default::default()
         };
+
         let translation = Vec3::new(
             rng.sample(distribution),
             rng.sample(distribution),
             rng.sample(distribution),
         );
 
-        let rand_offset = Vec3::new(
-            rng.gen::<f32>(),
-            rng.gen::<f32>(),
-            rng.gen::<f32>(),
-        );
 
         let transform = Transform::from_translation(translation)
-            .looking_at(translation + rand_offset, Vec3::Y)
             .with_scale(Vec3::splat(0.5));
+
 
         commands.spawn_bundle(boid_bundle)
             .insert(velocity)
             .insert(transform);
+            //.with_children(|children| {
+                //children.spawn()
+                    //.insert(Collider::ball(boid_settings.view_radius))
+                    //.insert(Sensor(true));
+            //});
     }
-}
-
-fn setup(
-    mut commands: Commands,
-    ) {
-    // light
-    commands.spawn_bundle(PointLightBundle {
-        point_light: PointLight {
-            intensity: 1500.0,
-            shadows_enabled: true,
-            ..default()
-        },
-        transform: Transform::from_xyz(0.0, 0.0, 0.0),
-        ..default()
-    });
 }
