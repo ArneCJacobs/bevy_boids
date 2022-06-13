@@ -28,7 +28,7 @@ fn main() {
             gravity: Vec3::new(0.0, 0.0, 0.0),
             ..Default::default()
         })
-        //.add_plugin(RapierDebugRenderPlugin::default())
+        .add_plugin(RapierDebugRenderPlugin::default())
         .add_startup_system(setup_graphics)
         .add_system(cursor_grab_system)
         .add_system(draw_field_system)
@@ -65,6 +65,7 @@ struct BoidSettings {
     alignment_weight: f32,
     cohesion_weight: f32,
     seperation_weight: f32,
+    boid_count: u64,
 }
 
 impl Default for BoidSettings {
@@ -80,35 +81,43 @@ impl Default for BoidSettings {
 
             view_radius: 40.,
             avoid_raduis: 10.,
+
+            boid_count: 20,
         }
     }
 
 }
 
 fn update_boids(
-    mut boids: Query<(&Transform, &mut ExternalForce, &Velocity), With<Boid>>,
+    mut boids: Query<(Entity, &Transform, &mut ExternalForce, &Velocity), With<Boid>>,
     boid_settings: Res<BoidSettings>,
-    other_boids_transform: Query<&Transform, With<Boid>>,
+    children: Query<&Parent>,
+    other_boids_transform: Query<(&Transform, With<Boid>, Option<&Parent>)>,
     rapier_context: Res<RapierContext>,
     mut lines: ResMut<DebugLines>,
 ) {
     let square_view_radius = boid_settings.view_radius * boid_settings.view_radius;
     let square_avoid_radius = boid_settings.avoid_raduis * boid_settings.avoid_raduis;
-    let shape = Collider::ball(boid_settings.view_radius);
-    let query_groups = InteractionGroups::new(0b10, !0b10);
 
-    let boid_data = boids.iter().map(|(boid_transform, _, _)| {
+    let boid_data = boids.iter().map(|(entity, boid_transform, _, _)| {
         let mut flock_heading = Vec3::ZERO;
         let mut flock_center = Vec3::ZERO;
         let mut seperation_heading = Vec3::ZERO;
         let mut flock_size = 0;
-        rapier_context.intersections_with_shape(boid_transform.translation, Rot::IDENTITY, &shape, query_groups, None, |entity| {
-
-            let other_boid_transform = other_boids_transform.get(entity).unwrap();
-            //lines.line_colored(boid_transform.translation, other_boid_transform.translation, 0., Color::GREEN);
-            if boid_transform == other_boid_transform {
-                return true;
+        for (e1, e2, b) in rapier_context.intersections_with(entity) {
+            let parent_opt = children.get(e2);
+            if !parent_opt.is_ok() {
+                continue;
             }
+
+            let (other_boid_transform, is_boid, _) = other_boids_transform.get(parent_opt.unwrap().0).unwrap();
+
+            if !is_boid || boid_transform == other_boid_transform {
+                continue;
+            }
+
+            lines.line_colored(boid_transform.translation, other_boid_transform.translation, 0., Color::GREEN);
+
             let offset = other_boid_transform.translation - boid_transform.translation;
             let square_dist = offset.length_squared();
             if square_dist < square_view_radius {
@@ -119,14 +128,12 @@ fn update_boids(
                     seperation_heading -= offset / square_dist;
                 }
             }
-            return true;
-
-        });
+        }
         return (flock_heading, flock_center, seperation_heading, flock_size);
     }).collect::<Vec<_>>();
 
     for (boid_cur_data, boid_calc_data) in itertools::zip(boids.iter_mut(), boid_data) {
-        let (transform, mut external_force, velocity) = boid_cur_data;
+        let (entity, transform, mut external_force, velocity) = boid_cur_data;
         let (flock_heading, flock_center, seperation_heading, flock_size) = boid_calc_data;
         external_force.force = Vec3::ZERO;
         if flock_size == 0 {
@@ -437,7 +444,7 @@ fn spawn_boids(
     ).abs();
     let distribution = Uniform::new(-radius, radius);
     let rotation_distribution = Uniform::new(-1., 1.);
-    for _ in 0..1000 {
+    for _ in 0..boid_settings.boid_count {
         let boid_bundle = create_boid_bundle(&mut meshes, &mut materials);
 
         let linvel = Vec3::new(
@@ -463,11 +470,11 @@ fn spawn_boids(
 
         commands.spawn_bundle(boid_bundle)
             .insert(velocity)
-            .insert(transform);
-            //.with_children(|children| {
-                //children.spawn()
-                    //.insert(Collider::ball(boid_settings.view_radius))
-                    //.insert(Sensor(true));
-            //});
+            .insert(transform)
+            .with_children(|children| {
+                children.spawn()
+                    .insert(Collider::ball(boid_settings.view_radius))
+                    .insert(Sensor(true));
+            });
     }
 }
