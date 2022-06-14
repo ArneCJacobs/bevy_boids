@@ -11,8 +11,73 @@ use itertools::Itertools;
 use rand::distributions::Uniform;
 use rand::{Rng, thread_rng};
 use bevy_rapier3d::math::Rot;
+use core::ops::Deref;
+use vec_map::VecMap;
 
 struct Field(Aabb);
+struct SpacialMap { 
+    map: VecMap<Vec<Entity>>,
+    min_chunk_pos: Option<IVec3>,
+    size_vec: Option<IVec3>,
+}
+
+#[derive(Component, Clone)]
+struct ChunkPos{ 
+    pos: IVec3,
+}
+
+impl ChunkPos {
+    fn new(pos: IVec3) -> Self {
+        ChunkPos {
+            pos,
+        }
+    }
+}
+
+impl Default for SpacialMap {
+    fn default() -> Self {
+        SpacialMap {
+            map: VecMap::new(),
+            min_chunk_pos: None,
+            size_vec: None, // x: num rows, y: num cols, z: num tables
+        }
+    }
+}
+
+impl SpacialMap {
+    fn init(&mut self, min_chunk_pos: IVec3, size_vec: IVec3) {
+        self.min_chunk_pos = Some(min_chunk_pos);
+        self.size_vec = Some(
+            IVec3::new(
+                1,
+                size_vec.x,
+                size_vec.x * size_vec.y,
+            )
+        );
+    }
+
+    fn chunk_pos_to_key_unchecked(&self, chunk_pos: IVec3) -> usize {
+        let temp = chunk_pos - self.min_chunk_pos.unwrap();
+        return temp.dot(self.size_vec.unwrap()) as usize;
+    }
+
+    fn replace_chunk(&mut self, chunk_pos: IVec3, boids: Vec<Entity>) {
+        let key = self.chunk_pos_to_key_unchecked(chunk_pos);
+        self.map.insert(key,boids);
+    }
+
+    fn get_chunk(&self, chunk_pos: IVec3) -> Option<&Vec<Entity>> {
+        let key = self.chunk_pos_to_key_unchecked(chunk_pos);
+        self.map.get(key)
+    }
+
+    fn get_chunk_mut(&mut self, chunk_pos: IVec3) -> Option<&mut Vec<Entity>> {
+        let key = self.chunk_pos_to_key_unchecked(chunk_pos);
+        self.map.get_mut(key)
+    }
+
+
+}
 
 fn main() {
     let field_width = 200.0;
@@ -20,27 +85,109 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugin(WorldInspectorPlugin::new())
-        .add_plugin(FpsCameraPlugin::default())
         .add_plugin(DebugLinesPlugin::default())
-        .add_plugin(LookTransformPlugin)
+        // rapier
         .add_plugin(RapierPhysicsPlugin::<NoUserData>::default())
         .insert_resource(RapierConfiguration{
             gravity: Vec3::new(0.0, 0.0, 0.0),
             ..Default::default()
         })
         .add_plugin(RapierDebugRenderPlugin::default())
+        // basic setup
+        .add_plugin(FpsCameraPlugin::default())
+        .add_plugin(LookTransformPlugin)
         .add_startup_system(setup_graphics)
         .add_system(cursor_grab_system)
         .add_system(draw_field_system)
-        .add_system(keep_inside_field)
         //.add_system(debug_draw_boid)
-        .add_system(boid_look_at_velocity)
+        // boids
         .insert_resource(Field(Aabb::from_min_max(-field, field)))
-        .add_startup_system(spawn_boids)
-        .add_system(update_boids)
         .insert_resource(BoidSettings::default())
+        .add_startup_system(spawn_boids.before(init_spatial_map))
+        .add_system(boid_look_at_velocity)
+        .add_system(keep_inside_field)
+        .add_system(update_boids)
         .add_system(enforce_min_speed.after(update_boids))
+        // spacial map
+        .insert_resource(SpacialMap::default())
+        .add_startup_system(init_spatial_map.after(spawn_boids))
+        .add_system(update_spacial_map)
+        .insert_resource(DelayMap(Vec::new()))
         .run();
+}
+
+fn init_spatial_map(
+    field: Res<Field>,
+    boid_settings: Res<BoidSettings>,
+    mut spacial_map: ResMut<SpacialMap>,
+    boids: Query<(Entity, &Transform), With<Boid>>,
+    mut commands: Commands,
+) {
+    let min: Vec3 = field.0.min().into();
+    let max: Vec3 = field.0.max().into();
+    let mut map = boids.iter().into_group_map_by(|(_, pos)| to_chunk_location(&boid_settings, pos.translation));
+
+    spacial_map.init(
+        to_chunk_location(&boid_settings, min), 
+        ((max - min)/boid_settings.view_radius).ceil().as_ivec3()
+    );
+
+    let size_vec = spacial_map.size_vec.unwrap();
+    spacial_map.map.reserve_len((size_vec.x * size_vec.y * size_vec.z) as usize);
+    for (chunk_pos, boids) in map.drain() {
+        for (boid, _) in boids.iter(){
+            commands.entity(*boid)
+                .insert(ChunkPos::new(chunk_pos));
+        }
+        
+        spacial_map.replace_chunk(
+            chunk_pos, 
+            boids.iter().map(|(entity, _)| entity.clone()).collect()
+        );
+    }
+}
+
+struct DelayMap(Vec<(Entity, ChunkPos)>);
+
+fn update_spacial_map(
+    boid_settings: Res<BoidSettings>,
+    mut spacial_map: ResMut<SpacialMap>,
+    mut boids: Query<(Entity, &Transform, Option<&mut ChunkPos>), (With<Boid>, Changed<Transform>)>,
+    mut commands: Commands,
+) {
+    for (entity, transform, chunk_pos_opt) in boids.iter_mut() {
+        let new_chunk_pos = to_chunk_location(&boid_settings, transform.translation);
+
+        if let Some(mut chunk_pos) = chunk_pos_opt {
+            if new_chunk_pos != chunk_pos.pos {
+                //let new_chunk = spacial_map.get_chunk_mut(new_chunk_pos).unwrap();
+                //new_chunk.push(entity);
+                let chunk = spacial_map.get_chunk_mut(chunk_pos.pos).unwrap();
+                let index = chunk.iter().position(|&e| e == entity).unwrap();
+                chunk.swap_remove(index);
+                chunk_pos.pos = new_chunk_pos; 
+            }
+        } else {
+            commands.entity(entity)
+                .insert(ChunkPos{ pos: new_chunk_pos });
+        } 
+
+        if let Some(new_chunk) = spacial_map.get_chunk_mut(new_chunk_pos) {
+            new_chunk.push(entity);
+        } else {
+            spacial_map.replace_chunk(new_chunk_pos, vec![entity]);
+        }
+    }
+
+    //for (entity, new_chunk_pos) in itertools::zip(test, test2) {
+        //commands.entity(entity)
+            //.insert(new_chunk_pos);
+    //}
+
+}
+
+fn to_chunk_location(boid_settings: &Res<BoidSettings>, pos: Vec3) -> IVec3 {
+    (pos / boid_settings.view_radius).floor().as_ivec3()
 }
 
 fn enforce_min_speed(
@@ -470,11 +617,11 @@ fn spawn_boids(
 
         commands.spawn_bundle(boid_bundle)
             .insert(velocity)
-            .insert(transform)
-            .with_children(|children| {
-                children.spawn()
-                    .insert(Collider::ball(boid_settings.view_radius))
-                    .insert(Sensor(true));
-            });
+            .insert(transform);
+            //.with_children(|children| {
+                //children.spawn()
+                    //.insert(Collider::ball(boid_settings.view_radius))
+                    //.insert(Sensor(true));
+            //});
     }
 }
