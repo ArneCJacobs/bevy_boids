@@ -14,6 +14,7 @@ use core::ops::Deref;
 use vec_map::VecMap;
 use bevy_inspector_egui::{WorldInspectorPlugin, Inspectable, RegisterInspectable};
 use bevy_inspector_egui::prelude::*;
+use noise::{NoiseFn, OpenSimplex};
 
 struct Field(Aabb);
 
@@ -115,7 +116,7 @@ impl SpacialMap {
 
 
 fn main() {
-    let field_width = 200.0;
+    let field_width = 400.0;
     let field = Vec3::splat(field_width/2.0);
     App::new()
         .add_plugins(DefaultPlugins)
@@ -139,6 +140,7 @@ fn main() {
         .insert_resource(Field(Aabb::from_min_max(-field, field)))
         //.insert_resource(BoidSettings::default())
         .add_plugin(InspectorPlugin::<BoidSettings>::new())
+        .add_plugin(InspectorPlugin::<WindSettings>::new())
         .add_startup_system(spawn_boids.before(init_spatial_map))
         .add_system(update_boids)
         .add_system(keep_inside_field.after(update_boids))
@@ -150,7 +152,40 @@ fn main() {
         .add_system(update_spacial_map.after(keep_inside_field))
         //.add_system(print_spacial_map.before(update_boids))
         .register_inspectable::<ChunkPos>()
+        .add_system(windfield_system)
         .run();
+}
+
+
+#[derive(Inspectable)]
+struct WindSettings {
+    strength: f32,
+}
+
+impl Default for WindSettings {
+    fn default() -> Self {
+        WindSettings {
+            strength: 1.
+        }
+    }
+}
+
+fn windfield_system(
+    mut entities: Query<(&Transform, &mut ExternalForce)>,
+    wind_settings: Res<WindSettings>
+) {
+    let simplex = OpenSimplex::new();
+    for (transform, mut external_force) in entities.iter_mut() {
+        let pos1: [f64; 3] = transform.translation.as_dvec3().into();
+        let pos2: [f64; 3] = (transform.translation + Vec3::new(2., 5., 0.)).as_dvec3().into();
+        let pos3: [f64; 3] = (transform.translation + Vec3::new(9., -5., -25.)).as_dvec3().into();
+        let turbulence = Vec3::new(
+            simplex.get(pos1) as f32,
+            simplex.get(pos3) as f32,
+            simplex.get(pos3) as f32,
+        );
+        external_force.force += turbulence * wind_settings.strength;
+    }
 }
 
 fn print_spacial_map(
@@ -286,7 +321,7 @@ impl Default for BoidSettings {
             view_radius: 20.,
             avoid_raduis: 5.,
 
-            boid_count: 1000,
+            boid_count: 2000,
         }
     }
 
