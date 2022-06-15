@@ -97,13 +97,16 @@ impl SpacialMap {
         //let chunk_pos = to_chunk_location(boid_settings, pos);
         let min: Vec3 = field.0.min().into();
         let max: Vec3 = field.0.max().into();
-
+        //println!("====================");
+        //println!("{:?}", pos);
         PXS.iter()
             .map(move |&px| pos + px * boid_settings.view_radius)
             .map(move |new_pos| keep_pos_inside_field(min, max, new_pos) )
             .map(move |new_pos| to_chunk_location(&boid_settings, new_pos))
+            //.map(|chunk_pos| {println!("{:?}", chunk_pos); chunk_pos})
             .map(|chunk_pos| self.chunk_pos_to_key_unchecked(chunk_pos))
             .unique()
+            //.map(|chunk_pos| {println!("{:?}", chunk_pos); chunk_pos})
             .filter_map(|chunk_key| self.map.get(chunk_key))
             .flat_map(|vec| vec.iter())
     }
@@ -111,7 +114,7 @@ impl SpacialMap {
 
 
 fn main() {
-    let field_width = 30.0;
+    let field_width = 200.0;
     let field = Vec3::splat(field_width/2.0);
     App::new()
         .add_plugins(DefaultPlugins)
@@ -135,15 +138,15 @@ fn main() {
         .insert_resource(Field(Aabb::from_min_max(-field, field)))
         .insert_resource(BoidSettings::default())
         .add_startup_system(spawn_boids.before(init_spatial_map))
-        .add_system(boid_look_at_velocity)
-        .add_system(keep_inside_field)
         .add_system(update_boids)
+        .add_system(keep_inside_field.after(update_boids))
+        .add_system(boid_look_at_velocity.after(update_boids))
         .add_system(enforce_min_speed.after(update_boids))
         // spacial map
         .insert_resource(SpacialMap::default())
         .add_startup_system(init_spatial_map.after(spawn_boids))
-        .add_system(update_spacial_map)
-        .add_system(print_spacial_map)
+        .add_system(update_spacial_map.after(keep_inside_field))
+        //.add_system(print_spacial_map.before(update_boids))
         .register_inspectable::<ChunkPos>()
         .run();
 }
@@ -172,7 +175,8 @@ fn init_spatial_map(
         temp_vec, 
     );
 
-    spacial_map.map.reserve_len(temp_vec.dot(IVec3::ONE) as usize);
+    spacial_map.map = VecMap::with_capacity(temp_vec.dot(IVec3::ONE) as usize);
+    //spacial_map.map.reserve_len(temp_vec.dot(IVec3::ONE) as usize);
     for (chunk_pos, boids) in map.drain() {
         for (boid, _) in boids.iter(){
             commands.entity(*boid)
@@ -272,7 +276,7 @@ impl Default for BoidSettings {
             view_radius: 20.,
             avoid_raduis: 5.,
 
-            boid_count: 2,
+            boid_count: 200,
         }
     }
 
@@ -322,24 +326,24 @@ fn update_boids(
         return (flock_heading, flock_center, seperation_heading, flock_size);
     }).collect::<Vec<_>>();
 
-    //for (boid_cur_data, boid_calc_data) in itertools::zip(boids.iter_mut(), boid_data) {
-        //let (entity, transform, mut external_force, velocity) = boid_cur_data;
-        //let (flock_heading, flock_center, seperation_heading, flock_size) = boid_calc_data;
-        //external_force.force = Vec3::ZERO;
-        //if flock_size == 0 {
-            //continue;
-        //}
-        //let avg_flock_center = flock_center / (flock_size as f32);
-        //let flock_center_offset = avg_flock_center - transform.translation;
+    for (boid_cur_data, boid_calc_data) in itertools::zip(boids.iter_mut(), boid_data) {
+        let (entity, transform, mut external_force, velocity) = boid_cur_data;
+        let (flock_heading, flock_center, seperation_heading, flock_size) = boid_calc_data;
+        external_force.force = Vec3::ZERO;
+        if flock_size == 0 {
+            continue;
+        }
+        let avg_flock_center = flock_center / (flock_size as f32);
+        let flock_center_offset = avg_flock_center - transform.translation;
 
-        //let alignment_force = steer_towards(velocity.linvel, flock_heading, &boid_settings) * boid_settings.alignment_weight;
-        //let collision_avoidence_force = steer_towards(velocity.linvel, flock_center_offset, &boid_settings) * boid_settings.cohesion_weight;
-        //let seperation_force = steer_towards(velocity.linvel, seperation_heading, &boid_settings) * boid_settings.seperation_weight;
+        let alignment_force = steer_towards(velocity.linvel, flock_heading, &boid_settings) * boid_settings.alignment_weight;
+        let collision_avoidence_force = steer_towards(velocity.linvel, flock_center_offset, &boid_settings) * boid_settings.cohesion_weight;
+        let seperation_force = steer_towards(velocity.linvel, seperation_heading, &boid_settings) * boid_settings.seperation_weight;
 
-        //external_force.force += alignment_force;
-        //external_force.force += collision_avoidence_force;
-        //external_force.force += seperation_force;
-    //}
+        external_force.force += alignment_force;
+        external_force.force += collision_avoidence_force;
+        external_force.force += seperation_force;
+    }
 
 }
 
@@ -457,7 +461,7 @@ fn setup_graphics(mut commands: Commands) {
                 transform: Transform::from_xyz(-3.0, 3.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
                 ..Default::default()
             },
-            Vec3::new(0., 0., 30.0),
+            Vec3::new(0., 0., 300.0),
             Vec3::new(0., 0., 0.),
         ));
 }
