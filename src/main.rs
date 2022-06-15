@@ -15,6 +15,8 @@ use vec_map::VecMap;
 use bevy_inspector_egui::{WorldInspectorPlugin, Inspectable, RegisterInspectable};
 use bevy_inspector_egui::prelude::*;
 use noise::{NoiseFn, OpenSimplex};
+use rayon::prelude::*;
+use bevy::tasks::TaskPool;
 
 struct Field(Aabb);
 
@@ -116,7 +118,7 @@ impl SpacialMap {
 
 
 fn main() {
-    let field_width = 400.0;
+    let field_width = 600.0;
     let field = Vec3::splat(field_width/2.0);
     App::new()
         .add_plugins(DefaultPlugins)
@@ -152,7 +154,8 @@ fn main() {
         .add_system(update_spacial_map.after(keep_inside_field))
         //.add_system(print_spacial_map.before(update_boids))
         .register_inspectable::<ChunkPos>()
-        .add_system(windfield_system)
+        .add_system(windfield_system.after(update_boids))
+        .insert_resource(BoidsTaskPool(TaskPool::new()))
         .run();
 }
 
@@ -160,12 +163,14 @@ fn main() {
 #[derive(Inspectable)]
 struct WindSettings {
     strength: f32,
+    scale: f32,
 }
 
 impl Default for WindSettings {
     fn default() -> Self {
         WindSettings {
-            strength: 1.
+            strength: 15.,
+            scale: 0.01,
         }
     }
 }
@@ -175,13 +180,14 @@ fn windfield_system(
     wind_settings: Res<WindSettings>
 ) {
     let simplex = OpenSimplex::new();
+    let scale = wind_settings.scale;
     for (transform, mut external_force) in entities.iter_mut() {
-        let pos1: [f64; 3] = transform.translation.as_dvec3().into();
-        let pos2: [f64; 3] = (transform.translation + Vec3::new(2., 5., 0.)).as_dvec3().into();
-        let pos3: [f64; 3] = (transform.translation + Vec3::new(9., -5., -25.)).as_dvec3().into();
+        let pos1: [f64; 3] = ((transform.translation * scale).as_dvec3()).into();
+        let pos2: [f64; 3] = ((transform.translation + Vec3::new(2., 5., 0.)) * scale).as_dvec3().into();
+        let pos3: [f64; 3] = ((transform.translation + Vec3::new(9., -5., -25.)) * scale).as_dvec3().into();
         let turbulence = Vec3::new(
             simplex.get(pos1) as f32,
-            simplex.get(pos3) as f32,
+            simplex.get(pos2) as f32,
             simplex.get(pos3) as f32,
         );
         external_force.force += turbulence * wind_settings.strength;
@@ -310,37 +316,39 @@ struct BoidSettings {
 impl Default for BoidSettings {
     fn default() -> Self {
         BoidSettings {
-            alignment_weight: 1.0,
+            alignment_weight: 1.2,
             cohesion_weight: 0.6,
-            seperation_weight: 1.0,
+            seperation_weight: 1.2,
 
             max_steer_force: 3.0,
             min_speed: 15.0,
             max_speed: 40.0,
 
-            view_radius: 20.,
-            avoid_raduis: 5.,
+            view_radius: 30.,
+            avoid_raduis: 16.2,
 
-            boid_count: 2000,
+            boid_count: 3000,
         }
     }
 
 }
 
+struct BoidsTaskPool(TaskPool);
+
 fn update_boids(
     mut boids: Query<(Entity, &Transform, &mut ExternalForce, &Velocity), With<Boid>>,
     boid_settings: Res<BoidSettings>,
-    children: Query<&Parent>,
     other_boids_transform: Query<&Transform, With<Boid>>,
-    rapier_context: Res<RapierContext>,
     mut lines: ResMut<DebugLines>,
     spacial_map: Res<SpacialMap>,
-    field: Res<Field>
+    field: Res<Field>,
+    boids_task_pool: Res<BoidsTaskPool>,
 ) {
     let square_view_radius = boid_settings.view_radius * boid_settings.view_radius;
     let square_avoid_radius = boid_settings.avoid_raduis * boid_settings.avoid_raduis;
 
-    let boid_data = boids.iter().map(|(_, boid_transform, _, _)| {
+
+    boids.par_for_each_mut(&boids_task_pool.0, 50, |(_, boid_transform, mut external_force, velocity)| {
         let mut flock_heading = Vec3::ZERO;
         let mut flock_center = Vec3::ZERO;
         let mut seperation_heading = Vec3::ZERO;
@@ -359,7 +367,7 @@ fn update_boids(
             if square_dist < square_view_radius {
                 flock_size += 1; 
                 flock_heading += other_boid_transform.forward();
-                flock_center += other_boid_transform.translation;
+                flock_center += other_boid_transform.translation; //TODO currently doesn't take into account that boids might be on the other side of the map due to the field being a torus
                 if square_dist < square_avoid_radius {
                     seperation_heading -= offset / square_dist;
                 }
@@ -368,18 +376,15 @@ fn update_boids(
 
         //for (e1, e2, b) in rapier_context.intersections_with(entity) {
         //}
-        return (flock_heading, flock_center, seperation_heading, flock_size);
-    }).collect::<Vec<_>>();
+        //
+        //return (flock_heading, flock_center, seperation_heading, flock_size);
 
-    for (boid_cur_data, boid_calc_data) in itertools::zip(boids.iter_mut(), boid_data) {
-        let (entity, transform, mut external_force, velocity) = boid_cur_data;
-        let (flock_heading, flock_center, seperation_heading, flock_size) = boid_calc_data;
         external_force.force = Vec3::ZERO;
         if flock_size == 0 {
-            continue;
+            return;
         }
         let avg_flock_center = flock_center / (flock_size as f32);
-        let flock_center_offset = avg_flock_center - transform.translation;
+        let flock_center_offset = avg_flock_center - boid_transform.translation;
 
         let alignment_force = steer_towards(velocity.linvel, flock_heading, &boid_settings) * boid_settings.alignment_weight;
         let collision_avoidence_force = steer_towards(velocity.linvel, flock_center_offset, &boid_settings) * boid_settings.cohesion_weight;
@@ -388,7 +393,13 @@ fn update_boids(
         external_force.force += alignment_force;
         external_force.force += collision_avoidence_force;
         external_force.force += seperation_force;
-    }
+    });
+    //.collect::<Vec<_>>();
+
+    //for (boid_cur_data, boid_calc_data) in itertools::zip(boids.iter_mut(), boid_data) {
+        //let (entity, transform, mut external_force, velocity) = boid_cur_data;
+        //let (flock_heading, flock_center, seperation_heading, flock_size) = boid_calc_data;
+    //}
 
 }
 
@@ -506,7 +517,7 @@ fn setup_graphics(mut commands: Commands) {
                 transform: Transform::from_xyz(-3.0, 3.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
                 ..Default::default()
             },
-            Vec3::new(0., 0., 300.0),
+            Vec3::new(0., 0., 400.0),
             Vec3::new(0., 0., 0.),
         ));
 }
@@ -711,6 +722,7 @@ fn spawn_boids(
 
         commands.spawn_bundle(boid_bundle)
             .insert(velocity)
+            .insert(Sensor(true))
             .insert(transform);
             //.with_children(|children| {
                 //children.spawn()
