@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
-use bevy_inspector_egui::WorldInspectorPlugin;
 use smooth_bevy_cameras::{controllers::fps::{FpsCameraBundle, FpsCameraController, FpsCameraPlugin}, LookTransformPlugin};
 use bevy::render::primitives::Aabb;
 use bevy_prototype_debug_lines::*;
@@ -13,6 +12,7 @@ use rand::{Rng, thread_rng};
 use bevy_rapier3d::math::Rot;
 use core::ops::Deref;
 use vec_map::VecMap;
+use bevy_inspector_egui::{WorldInspectorPlugin, Inspectable, RegisterInspectable};
 
 struct Field(Aabb);
 struct SpacialMap { 
@@ -21,7 +21,7 @@ struct SpacialMap {
     size_vec: Option<IVec3>,
 }
 
-#[derive(Component, Clone)]
+#[derive(Component, Clone, Inspectable)]
 struct ChunkPos{ 
     pos: IVec3,
 }
@@ -33,6 +33,16 @@ impl ChunkPos {
         }
     }
 }
+
+const PXS: [Vec3; 7] = [
+    Vec3::ZERO, 
+    Vec3::X, 
+    const_vec3!([-1., 0., 0.]),
+    Vec3::Y, 
+    const_vec3!([0., -1., 0.]),
+    Vec3::Z, 
+    const_vec3!([0., 0., -1.]),
+];
 
 impl Default for SpacialMap {
     fn default() -> Self {
@@ -76,8 +86,27 @@ impl SpacialMap {
         self.map.get_mut(key)
     }
 
+    fn get_boids_in_chunk_in_range<'a>(
+        &'a self, 
+        boid_settings: &'a Res<BoidSettings>, 
+        field: &'a Res<Field>, 
+        pos: Vec3
+    ) -> impl Iterator<Item=&Entity> + 'a {
+        //let chunk_pos = to_chunk_location(boid_settings, pos);
+        let min: Vec3 = field.0.min().into();
+        let max: Vec3 = field.0.max().into();
 
+        PXS.iter()
+            .map(move |&px| pos + px * boid_settings.view_radius)
+            //.map(move |new_pos| keep_pos_inside_field(min, max, new_pos) )
+            .map(move |new_pos| to_chunk_location(&boid_settings, new_pos))
+            .map(|chunk_pos| self.chunk_pos_to_key_unchecked(chunk_pos))
+            .unique()
+            .filter_map(|chunk_key| self.map.get(chunk_key))
+            .flat_map(|vec| vec.iter())
+    }
 }
+
 
 fn main() {
     let field_width = 200.0;
@@ -92,7 +121,7 @@ fn main() {
             gravity: Vec3::new(0.0, 0.0, 0.0),
             ..Default::default()
         })
-        .add_plugin(RapierDebugRenderPlugin::default())
+        //.add_plugin(RapierDebugRenderPlugin::default())
         // basic setup
         .add_plugin(FpsCameraPlugin::default())
         .add_plugin(LookTransformPlugin)
@@ -112,7 +141,7 @@ fn main() {
         .insert_resource(SpacialMap::default())
         .add_startup_system(init_spatial_map.after(spawn_boids))
         .add_system(update_spacial_map)
-        .insert_resource(DelayMap(Vec::new()))
+        .register_inspectable::<ChunkPos>()
         .run();
 }
 
@@ -127,13 +156,13 @@ fn init_spatial_map(
     let max: Vec3 = field.0.max().into();
     let mut map = boids.iter().into_group_map_by(|(_, pos)| to_chunk_location(&boid_settings, pos.translation));
 
+    let temp_vec = ((max - min)/boid_settings.view_radius).ceil().as_ivec3();
     spacial_map.init(
         to_chunk_location(&boid_settings, min), 
-        ((max - min)/boid_settings.view_radius).ceil().as_ivec3()
+        temp_vec, 
     );
 
-    let size_vec = spacial_map.size_vec.unwrap();
-    spacial_map.map.reserve_len((size_vec.x * size_vec.y * size_vec.z) as usize);
+    spacial_map.map.reserve_len(temp_vec.dot(IVec3::ONE) as usize);
     for (chunk_pos, boids) in map.drain() {
         for (boid, _) in boids.iter(){
             commands.entity(*boid)
@@ -146,8 +175,6 @@ fn init_spatial_map(
         );
     }
 }
-
-struct DelayMap(Vec<(Entity, ChunkPos)>);
 
 fn update_spacial_map(
     boid_settings: Res<BoidSettings>,
@@ -226,7 +253,7 @@ impl Default for BoidSettings {
             min_speed: 15.0,
             max_speed: 40.0,
 
-            view_radius: 40.,
+            view_radius: 20.,
             avoid_raduis: 10.,
 
             boid_count: 20,
@@ -239,27 +266,24 @@ fn update_boids(
     mut boids: Query<(Entity, &Transform, &mut ExternalForce, &Velocity), With<Boid>>,
     boid_settings: Res<BoidSettings>,
     children: Query<&Parent>,
-    other_boids_transform: Query<(&Transform, With<Boid>, Option<&Parent>)>,
+    other_boids_transform: Query<&Transform, With<Boid>>,
     rapier_context: Res<RapierContext>,
     mut lines: ResMut<DebugLines>,
+    spacial_map: Res<SpacialMap>,
+    field: Res<Field>
 ) {
     let square_view_radius = boid_settings.view_radius * boid_settings.view_radius;
     let square_avoid_radius = boid_settings.avoid_raduis * boid_settings.avoid_raduis;
 
-    let boid_data = boids.iter().map(|(entity, boid_transform, _, _)| {
+    let boid_data = boids.iter().map(|(_, boid_transform, _, _)| {
         let mut flock_heading = Vec3::ZERO;
         let mut flock_center = Vec3::ZERO;
         let mut seperation_heading = Vec3::ZERO;
         let mut flock_size = 0;
-        for (e1, e2, b) in rapier_context.intersections_with(entity) {
-            let parent_opt = children.get(e2);
-            if !parent_opt.is_ok() {
-                continue;
-            }
+        for other_boid in spacial_map.get_boids_in_chunk_in_range(&boid_settings, &field, boid_transform.translation) {
+            let other_boid_transform = other_boids_transform.get(*other_boid).unwrap();
 
-            let (other_boid_transform, is_boid, _) = other_boids_transform.get(parent_opt.unwrap().0).unwrap();
-
-            if !is_boid || boid_transform == other_boid_transform {
+            if boid_transform == other_boid_transform {
                 continue;
             }
 
@@ -276,27 +300,30 @@ fn update_boids(
                 }
             }
         }
+
+        //for (e1, e2, b) in rapier_context.intersections_with(entity) {
+        //}
         return (flock_heading, flock_center, seperation_heading, flock_size);
     }).collect::<Vec<_>>();
 
-    for (boid_cur_data, boid_calc_data) in itertools::zip(boids.iter_mut(), boid_data) {
-        let (entity, transform, mut external_force, velocity) = boid_cur_data;
-        let (flock_heading, flock_center, seperation_heading, flock_size) = boid_calc_data;
-        external_force.force = Vec3::ZERO;
-        if flock_size == 0 {
-            continue;
-        }
-        let avg_flock_center = flock_center / (flock_size as f32);
-        let flock_center_offset = avg_flock_center - transform.translation;
+    //for (boid_cur_data, boid_calc_data) in itertools::zip(boids.iter_mut(), boid_data) {
+        //let (entity, transform, mut external_force, velocity) = boid_cur_data;
+        //let (flock_heading, flock_center, seperation_heading, flock_size) = boid_calc_data;
+        //external_force.force = Vec3::ZERO;
+        //if flock_size == 0 {
+            //continue;
+        //}
+        //let avg_flock_center = flock_center / (flock_size as f32);
+        //let flock_center_offset = avg_flock_center - transform.translation;
 
-        let alignment_force = steer_towards(velocity.linvel, flock_heading, &boid_settings) * boid_settings.alignment_weight;
-        let collision_avoidence_force = steer_towards(velocity.linvel, flock_center_offset, &boid_settings) * boid_settings.cohesion_weight;
-        let seperation_force = steer_towards(velocity.linvel, seperation_heading, &boid_settings) * boid_settings.seperation_weight;
+        //let alignment_force = steer_towards(velocity.linvel, flock_heading, &boid_settings) * boid_settings.alignment_weight;
+        //let collision_avoidence_force = steer_towards(velocity.linvel, flock_center_offset, &boid_settings) * boid_settings.cohesion_weight;
+        //let seperation_force = steer_towards(velocity.linvel, seperation_heading, &boid_settings) * boid_settings.seperation_weight;
 
-        external_force.force += alignment_force;
-        external_force.force += collision_avoidence_force;
-        external_force.force += seperation_force;
-    }
+        //external_force.force += alignment_force;
+        //external_force.force += collision_avoidence_force;
+        //external_force.force += seperation_force;
+    //}
 
 }
 
@@ -308,16 +335,18 @@ fn steer_towards(velocity: Vec3, vector: Vec3, boid_settings: &Res<BoidSettings>
     return new_vector.clamp_length_max(boid_settings.max_steer_force);
 }
 
+fn keep_pos_inside_field(min: Vec3, max: Vec3, pos: Vec3) -> Vec3 {
+    let new_pos = Vec3::select(min.cmplt(pos), pos, max);
+    Vec3::select(new_pos.cmple(max), new_pos, min)
+}
+
 fn keep_inside_field(
     field: Res<Field>,
     mut boids: Query<&mut Transform, With<Boid>>) {
     let min: Vec3 = field.0.min().into();
     let max: Vec3 = field.0.max().into();
     for mut transform in boids.iter_mut() {
-        let mut pos = transform.translation;
-        pos = Vec3::select(min.cmplt(pos), pos, max);
-        pos = Vec3::select(pos.cmple(max), pos, min);
-        transform.translation = pos;
+        transform.translation = keep_pos_inside_field(min, max, transform.translation);
     }
     
 }
