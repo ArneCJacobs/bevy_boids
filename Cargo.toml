@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 bevy = { version = "0.7.0", features = ["dynamic"] }
 bevy_rapier3d = { version = "0.14.1", features = [ "simd-stable", "debug-render" ] }
-bevy-inspector-egui = "0.11"
+bevy-inspector-egui = "0.11.0"
 smooth-bevy-cameras = "0.4.0"
 bevy_prototype_debug_lines = { version = "0.7", features = ["3d"] }
 itertools = "0.10.3"

@@ -13,6 +13,7 @@ use bevy_rapier3d::math::Rot;
 use core::ops::Deref;
 use vec_map::VecMap;
 use bevy_inspector_egui::{WorldInspectorPlugin, Inspectable, RegisterInspectable};
+use bevy_inspector_egui::prelude::*;
 
 struct Field(Aabb);
 
@@ -118,7 +119,7 @@ fn main() {
     let field = Vec3::splat(field_width/2.0);
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugin(WorldInspectorPlugin::new())
+        //.add_plugin(WorldInspectorPlugin::new())
         .add_plugin(DebugLinesPlugin::default())
         // rapier
         .add_plugin(RapierPhysicsPlugin::<NoUserData>::default())
@@ -136,7 +137,8 @@ fn main() {
         //.add_system(debug_draw_boid)
         // boids
         .insert_resource(Field(Aabb::from_min_max(-field, field)))
-        .insert_resource(BoidSettings::default())
+        //.insert_resource(BoidSettings::default())
+        .add_plugin(InspectorPlugin::<BoidSettings>::new())
         .add_startup_system(spawn_boids.before(init_spatial_map))
         .add_system(update_boids)
         .add_system(keep_inside_field.after(update_boids))
@@ -249,15 +251,23 @@ fn enforce_min_speed(
     }
 }
 
+#[derive(Inspectable)]
 struct BoidSettings {
+    #[inspectable(min = 0.0)]
     view_radius: f32,
+    #[inspectable(min = 0.0)]
     avoid_raduis: f32,
+    #[inspectable(min = 0.0)]
     max_speed: f32,
+    #[inspectable(min = 0.0)]
     min_speed: f32,
     max_steer_force: f32,
 
+    #[inspectable(min = 0.0, max = 10.0)]
     alignment_weight: f32,
+    #[inspectable(min = 0.0, max = 10.0)]
     cohesion_weight: f32,
+    #[inspectable(min = 0.0, max = 10.0)]
     seperation_weight: f32,
     boid_count: u64,
 }
@@ -266,7 +276,7 @@ impl Default for BoidSettings {
     fn default() -> Self {
         BoidSettings {
             alignment_weight: 1.0,
-            cohesion_weight: 1.0,
+            cohesion_weight: 0.6,
             seperation_weight: 1.0,
 
             max_steer_force: 3.0,
@@ -276,7 +286,7 @@ impl Default for BoidSettings {
             view_radius: 20.,
             avoid_raduis: 5.,
 
-            boid_count: 200,
+            boid_count: 1000,
         }
     }
 
@@ -307,7 +317,7 @@ fn update_boids(
                 continue;
             }
 
-            lines.line_colored(boid_transform.translation, other_boid_transform.translation, 0., Color::GREEN);
+            //lines.line_colored(boid_transform.translation, other_boid_transform.translation, 0., Color::GREEN);
 
             let offset = other_boid_transform.translation - boid_transform.translation;
             let square_dist = offset.length_squared();
