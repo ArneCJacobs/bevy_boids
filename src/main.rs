@@ -15,11 +15,13 @@ use vec_map::VecMap;
 use bevy_inspector_egui::{WorldInspectorPlugin, Inspectable, RegisterInspectable};
 
 struct Field(Aabb);
+
 struct SpacialMap { 
     map: VecMap<Vec<Entity>>,
     min_chunk_pos: Option<IVec3>,
     size_vec: Option<IVec3>,
 }
+
 
 #[derive(Component, Clone, Inspectable)]
 struct ChunkPos{ 
@@ -98,7 +100,7 @@ impl SpacialMap {
 
         PXS.iter()
             .map(move |&px| pos + px * boid_settings.view_radius)
-            //.map(move |new_pos| keep_pos_inside_field(min, max, new_pos) )
+            .map(move |new_pos| keep_pos_inside_field(min, max, new_pos) )
             .map(move |new_pos| to_chunk_location(&boid_settings, new_pos))
             .map(|chunk_pos| self.chunk_pos_to_key_unchecked(chunk_pos))
             .unique()
@@ -109,7 +111,7 @@ impl SpacialMap {
 
 
 fn main() {
-    let field_width = 200.0;
+    let field_width = 30.0;
     let field = Vec3::splat(field_width/2.0);
     App::new()
         .add_plugins(DefaultPlugins)
@@ -141,8 +143,16 @@ fn main() {
         .insert_resource(SpacialMap::default())
         .add_startup_system(init_spatial_map.after(spawn_boids))
         .add_system(update_spacial_map)
+        .add_system(print_spacial_map)
         .register_inspectable::<ChunkPos>()
         .run();
+}
+
+fn print_spacial_map(
+    spacial_map: Res<SpacialMap>
+) {
+    println!("====================");
+    println!("{:?}", spacial_map.map);
 }
 
 fn init_spatial_map(
@@ -191,19 +201,25 @@ fn update_spacial_map(
                 //new_chunk.push(entity);
                 let chunk = spacial_map.get_chunk_mut(chunk_pos.pos).unwrap();
                 let index = chunk.iter().position(|&e| e == entity).unwrap();
-                chunk.swap_remove(index);
+                chunk.remove(index);
                 chunk_pos.pos = new_chunk_pos; 
+
+                if let Some(new_chunk) = spacial_map.get_chunk_mut(new_chunk_pos) {
+                    new_chunk.push(entity);
+                } else {
+                    spacial_map.replace_chunk(new_chunk_pos, vec![entity]);
+                }
             }
         } else {
             commands.entity(entity)
                 .insert(ChunkPos{ pos: new_chunk_pos });
+            if let Some(new_chunk) = spacial_map.get_chunk_mut(new_chunk_pos) {
+                new_chunk.push(entity);
+            } else {
+                spacial_map.replace_chunk(new_chunk_pos, vec![entity]);
+            }
         } 
 
-        if let Some(new_chunk) = spacial_map.get_chunk_mut(new_chunk_pos) {
-            new_chunk.push(entity);
-        } else {
-            spacial_map.replace_chunk(new_chunk_pos, vec![entity]);
-        }
     }
 
     //for (entity, new_chunk_pos) in itertools::zip(test, test2) {
@@ -254,9 +270,9 @@ impl Default for BoidSettings {
             max_speed: 40.0,
 
             view_radius: 20.,
-            avoid_raduis: 10.,
+            avoid_raduis: 5.,
 
-            boid_count: 20,
+            boid_count: 2,
         }
     }
 
@@ -441,7 +457,7 @@ fn setup_graphics(mut commands: Commands) {
                 transform: Transform::from_xyz(-3.0, 3.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
                 ..Default::default()
             },
-            Vec3::new(0., 0., 250.0),
+            Vec3::new(0., 0., 30.0),
             Vec3::new(0., 0., 0.),
         ));
 }
